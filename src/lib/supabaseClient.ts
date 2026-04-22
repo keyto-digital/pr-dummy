@@ -1,17 +1,13 @@
-// src/lib/supabaseClient.ts
-import { createClient } from "@supabase/supabase-js";
-
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-// Validasi env
-if (
-  typeof supabaseUrl !== "string" ||
-  typeof supabaseKey !== "string" ||
-  !supabaseUrl.includes("supabase.co") && !supabaseUrl.includes("localhost"))
- {
-  throw new Error("❌ Supabase env tidak valid. Cek konfigurasi Vercel dan prefix VITE_");
-}
+console.log("ENV DEBUG:", {
+  url: supabaseUrl,
+  key: supabaseKey,
+  all: import.meta.env,
+});
 
-// Inisialisasi Supabase client
-export const supabase = createClient(supabaseUrl, supabaseKey);
+// jangan throw dulu
+if (!supabaseUrl || !supabaseKey) {
+  console.error("❌ ENV tidak kebaca");
+}
