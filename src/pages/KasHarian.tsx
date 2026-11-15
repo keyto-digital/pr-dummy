@@ -102,8 +102,6 @@ export default function KasHarian() {
       const del = await hasAccess("kas_harian.delete");
       const bulk = await hasAccess("kas_harian.bulk_delete");
 
-      console.log("ACCESS DEBUG:", { edit, del, bulk }); // 🔍 debug
-
       setCanEditKas(edit);
       setCanDeleteKas(del);
       setCanBulkDeleteKas(bulk);
@@ -327,22 +325,25 @@ function injectSaldoKeData(
     if (!entityCtx?.entity_id) return;
 
     const { data, error } = await supabase
-      .from("premi_driver")
-      .select("driver")
-      .eq("entity_id", entityCtx.entity_id)
-      .not("driver", "is", null)
-      .order("driver", { ascending: true });
+      .from("driver")
+      .select("nama")
+      .eq("status", "AKTIF")
+      .order("nama", { ascending: true });
 
     if (error) {
       console.error("Error load driver:", error);
       return;
     }
 
-    const unique = Array.from(
-      new Set((data || []).map((d) => d.driver?.trim()))
-    ).filter(Boolean);
+    const uniqueDrivers = Array.from(
+      new Set(
+        (data || [])
+          .map((d) => (d.nama || "").trim())
+          .filter(Boolean)
+      )
+    );
 
-    setDrivers(unique);
+    setDrivers(uniqueDrivers);
   }
 
 
@@ -354,7 +355,7 @@ function injectSaldoKeData(
       const { data, error } = await supabase
         .from("jenis_potongan")
         .select("id, nama, kategori")
-        .eq("kategori", "jaminan") // 🔥 penting
+        .in("kategori", ["jaminan", "kasbon"]) // 🔥 penting
         .eq("entity_id", entityCtx.entity_id)
         .order("nama");
   
@@ -495,6 +496,7 @@ useEffect(() => {
     { nominal: 5000, qty: "" },
     { nominal: 2000, qty: "" },
     { nominal: 1000, qty: "" },
+    { nominal: 500, qty: "" },
   ]);
 
 
@@ -508,6 +510,7 @@ useEffect(() => {
       { nominal: 5000, qty: "" },
       { nominal: 2000, qty: "" },
       { nominal: 1000, qty: "" },
+      { nominal: 500, qty: "" },
     ]);
     
     setBrankas("");
@@ -575,7 +578,12 @@ useEffect(() => {
   };
 
   // Export Excel (Set Manual sesuai frontend)
-  const handleExportExcel = () => {    
+  const handleExportExcel = () => {
+    if (!entityCtx) {
+      alert("Entity belum tersedia.");
+      return;
+    }
+
     const columns: ColumnConfig[] = [
     { label: "Tanggal", key: "tanggal", type: "date", format: toDate, formatString: "dd/mm/yyyy" },
     { label: "Waktu", key: "waktu" },
@@ -599,31 +607,53 @@ useEffect(() => {
     { label: "Updated At", key: "updated_at", type: "date", format: toDate, formatString: "dd/mm/yyyy hh:mm:ss" },
   ];
 
-    const sampleRow = dataWithSaldo[0];
-    const normalized = columns.map((col) => {
-      let val = sampleRow[col.key as keyof typeof sampleRow];
-      if (col.format) val = col.format(val, sampleRow);
-      if (col.type === "date") {
-        const d = new Date(val as string | number | Date);
-        return isNaN(d.getTime()) ? "" : d;
-      }
-      if (col.type === "currency") {
-        return typeof val === "number" ? val : Number(val) || "";
-      }
-      return val ?? "";
-    });
+    // ============================
+    // Nama file berdasarkan Date Range
+    // ============================
+    const start = range[0]?.startDate ?? new Date();
+    const end = range[0]?.endDate ?? new Date();
 
-    console.log("🔍 Normalized row:", normalized);
+    const startDay = format(start, "dd");
+    const endDay = format(end, "dd");
+    const month = format(end, "MMMM", { locale: id });
+    const year = format(end, "yy");
+
+    // ============================
+    // Nama file berdasarkan Entity + Date Range
+    // ============================
+
+    const targetEntityId =
+      entityCtx.tipe === "pusat"
+        ? selectedEntity ?? entityCtx.entity_id
+        : entityCtx.entity_id;
+
+    const exportEntity = entities.find(
+      (ent) => ent.id === targetEntityId
+    );
+
+    const entityLabel =
+      exportEntity?.kode ||
+      entityCtx.kode ||
+      "Entity";
+
+    const exportFilename =
+      `KasHarian ${entityLabel} ${startDay}-${endDay} ${month} ${year}.xlsx`;
 
     exportTableToExcel(dataWithSaldo, {
-      filename: "KasHarian.xlsx",
+      filename: exportFilename,
       sheetName: "Kas Harian",
       columns,
       prependRows: [
         { keterangan: "Saldo Awal", saldo_akhir: saldoAwalHistori }
       ],
       appendRows: [
-        { keterangan: "Saldo Akhir", saldo_akhir: dataWithSaldo.at(-1)?.saldo_akhir }
+        {
+          keterangan: "Saldo Akhir",
+          saldo_akhir:
+            dataWithSaldo.length > 0
+              ? dataWithSaldo.at(-1)?.saldo_akhir
+              : saldoAwalHistori
+        }
       ]
     });
   };
@@ -796,7 +826,7 @@ useEffect(() => {
     const rawSaldoAkhir =
       dataWithSaldo.length > 0
         ? dataWithSaldo[dataWithSaldo.length - 1].saldo_akhir
-        : 0;
+        : saldoAwalHistori;
 
     const saldoAkhir = rawSaldoAkhir ?? 0;
 
@@ -1616,7 +1646,13 @@ useEffect(() => {
                         <td className="p-2 border"></td>
                         <td className="p-2 border"></td>
                         <td className="p-2 border"></td>
-                        <td className="p-2 border">{fmt(dataWithSaldo.at(-1)?.saldo_akhir)}</td>
+                        <td className="p-2 border">
+                          {fmt(
+                            dataWithSaldo.length > 0
+                              ? dataWithSaldo.at(-1)?.saldo_akhir
+                              : saldoAwalHistori
+                          )}
+                        </td>
                         <td className="p-2 border"></td>
                         <td className="p-2 border"></td>
                       </tr>
@@ -1719,7 +1755,7 @@ useEffect(() => {
 
                   {/* ===== JENIS & DRIVER (2 KOLOM) ===== */} 
                 <div>
-                  <label className="block mb-1 font-semibold">Khusus jaminan Driver</label>
+                  <label className="block mb-1 font-semibold">Khusus Jaminan & Piutang Driver</label>
                   <select
                     value={formData.kategori || ""}
                     onChange={(e) =>
@@ -1744,7 +1780,7 @@ useEffect(() => {
                       setFormData({ ...formData, driver: e.target.value })
                     }
                     className="w-full border rounded px-3 py-2"
-                    disabled={formData.kategori !== "Jaminan Driver"}
+                    disabled={!formData.kategori}
                   >
                     <option value="">Pilih Driver</option>
                     {drivers.map((d) => (

@@ -32,6 +32,7 @@ interface SuratJalanData {
   snack_kembali: number | null | undefined;
   keterangan: string;
   user_id?: string;
+  created_at?: string;
   updated_at?: string;
   perpal_1x_tanggal?: string | null;
   perpal_1x_rute?: string | null;
@@ -85,6 +86,8 @@ export default function SuratJalan() {
       key: "selection",
     },
   ]);
+
+  const [isRangeSelected, setIsRangeSelected] = useState(false);
 
   const [showPicker, setShowPicker] = useState(false);
   const triggerRef = useRef<HTMLDivElement | null>(null);
@@ -350,7 +353,6 @@ const handleSelectKodeRute = (item: Rute) => {
     setLoading(true);
 
     if (!entityCtx?.entity_id) {
-      console.warn("❌ fetchData dipanggil tanpa entityCtx");
       setLoading(false);
       return;
     }
@@ -358,24 +360,40 @@ const handleSelectKodeRute = (item: Rute) => {
     let query = supabase
       .from("surat_jalan")
       .select("*")
-      .order("id", { ascending: false });
+      .order("created_at", { ascending: false });
 
-    // 🔐 FILTER ENTITY
+    // FILTER ENTITY
     if (entityCtx.tipe === "pusat") {
-      const targetEntity = selectedEntityId ?? entityCtx.entity_id;
-      query = query.eq("entity_id", targetEntity);
+      query = query.eq(
+        "entity_id",
+        selectedEntityId ?? entityCtx.entity_id
+      );
     } else {
       query = query.eq("entity_id", entityCtx.entity_id);
     }
 
-    const { data, error } = await query;
+    const pageSize = 1000;
+    let from = 0;
+    let allData: SuratJalanData[] = [];
 
-    if (error) {
-      console.error("Gagal ambil data:", error.message);
-    } else {
-      setData(data as SuratJalanData[]);
-      setFiltered(data as SuratJalanData[]);
+    while (true) {
+      const { data, error } = await query.range(from, from + pageSize - 1);
+
+      if (error) {
+        console.error(error.message);
+        break;
+      }
+
+      if (!data || data.length === 0) break;
+
+      allData.push(...(data as SuratJalanData[]));
+
+      if (data.length < pageSize) break;
+
+      from += pageSize;
     }
+
+    setData(allData);
 
     setLoading(false);
   };
@@ -409,33 +427,112 @@ const handleSelectKodeRute = (item: Rute) => {
   useEffect(() => {
     let filteredData = [...data];
 
-    // 🔍 SEARCH
+    const sortTerbaru = (rows: SuratJalanData[]) =>
+      rows.sort((a, b) => {
+
+        // ==========================================
+        // UTAMAKAN CREATED_AT
+        // SJ TERAKHIR DIBUAT = PALING ATAS
+        // ==========================================
+        const createdA = a.created_at
+          ? new Date(a.created_at).getTime()
+          : 0;
+
+        const createdB = b.created_at
+          ? new Date(b.created_at).getTime()
+          : 0;
+
+        if (createdB !== createdA) {
+          return createdB - createdA;
+        }
+
+        // ==========================================
+        // FALLBACK JIKA CREATED_AT SAMA / TIDAK ADA
+        // ==========================================
+        return b.no_surat_jalan.localeCompare(
+          a.no_surat_jalan,
+          undefined,
+          {
+            numeric: true,
+            sensitivity: "base",
+          }
+        );
+      });
+
+    // =========================
+    // SEARCH DULU
+    // =========================
     if (search.trim() !== "") {
-      filteredData = filteredData.filter(
-        (d) =>
-          d.no_surat_jalan?.toLowerCase().includes(search.toLowerCase()) ||
-          d.no_polisi?.toLowerCase().includes(search.toLowerCase()) ||
-          d.driver?.toLowerCase().includes(search.toLowerCase())
+      const keyword = search.toLowerCase();
+
+      filteredData = filteredData.filter((d) =>
+        d.no_surat_jalan?.toLowerCase().includes(keyword) ||
+        d.no_polisi?.toLowerCase().includes(keyword) ||
+        d.driver?.toLowerCase().includes(keyword)
       );
+
+      // Kalau sedang search,
+      // jangan filter tanggal sama sekali.
+      setFiltered(sortTerbaru(filteredData));
+      setCurrentPage(1);
+      return;
     }
 
-    // 📅 DATE RANGE FILTER
-    const start = range[0]?.startDate;
-    const end = range[0]?.endDate;
+    // =========================
+    // FILTER DATE RANGE
+    // =========================
+    if (isRangeSelected) {
+      const start = range[0]?.startDate;
+      const end = range[0]?.endDate;
 
-    if (start && end) {
-      const endDate = new Date(end);
-      endDate.setHours(23, 59, 59, 999);
+      if (start && end) {
+        const endDate = new Date(end);
+        endDate.setHours(23, 59, 59, 999);
+
+        filteredData = filteredData.filter((d) => {
+          const tgl = new Date(d.tanggal_berangkat);
+          return tgl >= start && tgl <= endDate;
+        });
+
+        filteredData = sortTerbaru(filteredData);
+      }
+    } else {
+      // =========================
+      // DEFAULT = BULAN BERJALAN
+      // TERMASUK TANGGAL BERANGKAT MASA DEPAN
+      // =========================
+      const now = new Date();
+
+      const awalBulan = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        1
+      );
+
+      const akhirBulan = new Date(
+        now.getFullYear(),
+        now.getMonth() + 1,
+        0
+      );
+
+      akhirBulan.setHours(23, 59, 59, 999);
 
       filteredData = filteredData.filter((d) => {
+        if (!d.tanggal_berangkat) return false;
+
         const tgl = new Date(d.tanggal_berangkat);
-        return tgl >= start && tgl <= endDate;
+
+        return tgl >= awalBulan && tgl <= akhirBulan;
       });
+
+      // Tetap urut berdasarkan SJ yang TERAKHIR DIBUAT
+      filteredData = sortTerbaru(filteredData);
     }
 
     setFiltered(filteredData);
     setCurrentPage(1);
-  }, [search, data, range]);
+
+  }, [search, data, range, isRangeSelected]);
 
   // --- Pagination Logic ---
   const totalPages = Math.ceil(filtered.length / itemsPerPage);
@@ -1498,6 +1595,7 @@ const handleSelectKodeRute = (item: Rute) => {
                   value={formData.snack_berangkat || ""}
                   onChange={handleChange}
                   className="w-full border rounded px-3 py-2"
+                  disabled={isLocked}
                 />
               </div>
 
@@ -1703,10 +1801,12 @@ const handleSelectKodeRute = (item: Rute) => {
             <DateRangePicker
               className="custom-datepicker"
               onChange={(ranges) => {
-                const selection = ranges.selection;
-                if (selection?.startDate && selection?.endDate) {
-                  setRange([selection]);
-                }
+                  const selection = ranges.selection;
+
+                  if (selection?.startDate && selection?.endDate) {
+                      setRange([selection]);
+                      setIsRangeSelected(true);
+                  }
               }}
               moveRangeOnFirstSelection={false}
               showMonthAndYearPickers
@@ -1726,7 +1826,19 @@ const handleSelectKodeRute = (item: Rute) => {
                 Apply
               </button>
               <button
-                onClick={() => setShowPicker(false)}
+                onClick={() => {
+                    setShowPicker(false);
+
+                    setRange([
+                      {
+                        startDate: undefined,
+                        endDate: undefined,
+                        key: "selection",
+                      },
+                    ]);
+
+                    setIsRangeSelected(false);
+                }}
                 className="px-3 py-1 bg-gray-300 rounded"
               >
                 Cancel

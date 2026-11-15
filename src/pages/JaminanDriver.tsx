@@ -100,25 +100,30 @@ export default function LaporanDriver() {
 
   async function loadDrivers() {
 
-    if (!entityId) return;
-
     const { data, error } = await supabase
-      .from("premi_driver")
-      .select("driver")
-      .eq("entity_id", entityId)
-      .not("driver", "is", null)
-      .order("driver", { ascending: true });
+      .from("driver")
+      .select("nama")
+      .not("nama", "is", null)
+      .order("nama", { ascending: true });
 
     if (error) {
       console.error("Error load driver:", error);
       return;
     }
 
-    if (!data) return;
+    if (!data) {
+      setDrivers([]);
+      return;
+    }
 
+    // 🔥 unique + trim + hapus kosong
     const uniqueDrivers = Array.from(
-      new Set(data.map((d) => d.driver?.trim()))
-    ).filter(Boolean);
+      new Set(
+        data
+          .map((d) => d.nama?.trim())
+          .filter(Boolean)
+      )
+    );
 
     setDrivers(uniqueDrivers);
   }
@@ -127,7 +132,7 @@ export default function LaporanDriver() {
     const { data: premi, error } = await supabase
       .from("premi_driver")
       .select("id, no_premi_driver, no_polisi, kode_rute, potongan_jaminan, tanggal, tanggal_berangkat, tanggal_kembali")
-      .eq("driver", selectedDriver)
+      .ilike("driver", selectedDriver.trim())
       .eq("entity_id", entityId)
       .gt("potongan_jaminan", 0) // 🔥 FILTER DI SINI
       .order("tanggal", { ascending: true });
@@ -153,7 +158,7 @@ export default function LaporanDriver() {
     const { data: kas } = await supabase
       .from("kas_harian")
       .select("tanggal, nominal, bukti_transaksi, jenis_transaksi, driver, keterangan, kategori")
-      .eq("driver", selectedDriver)
+      .ilike("driver", selectedDriver.trim())
       .eq("entity_id", entityId)
       .eq("kategori", "Jaminan Driver"); // 🔥 harus sama dengan nama di DB
 
@@ -183,7 +188,7 @@ export default function LaporanDriver() {
   }
 
   const filteredDrivers = drivers.filter((d) =>
-    d.toLowerCase().includes(driverSearch.toLowerCase())
+    d.toLowerCase().includes(driverSearch.trim().toLowerCase())
   );
 
   const formatTanggal = (tgl: string | null | undefined): string => {

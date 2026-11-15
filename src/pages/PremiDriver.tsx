@@ -27,6 +27,7 @@ interface PremiData {
   kode_unit: string;
   kode_rute: string;
   premi: number | null;
+  bonus: number | null;
   perpal: number | null;
   potongan: number | null;
   jumlah: number | null;
@@ -53,12 +54,6 @@ export const toDate = (v: unknown): Date | "" => {
     return isNaN(d.getTime()) ? "" : d;
   }
   return "";
-};
-
-type PremiDriverRow = {
-  no_surat_jalan: string;
-  driver: string | null;
-  crew?: string | null;
 };
 
 export default function PremiDriver() {
@@ -132,6 +127,7 @@ export default function PremiDriver() {
     kode_unit: "",
     kode_rute: "",
     premi: 0,
+    bonus: 0,
     perpal: 0,
     potongan: 0,
     jumlah: 0,
@@ -464,125 +460,213 @@ export default function PremiDriver() {
   }, []);
 
   // --- CEK FETCH SJ TERSEDIA ---
+  // Konsep dropdown:
+  // 1. SJ HARUS sudah memiliki uang_saku_driver.
+  // 2. SJ BELUM boleh memiliki premi_driver.
+  // 3. Ambil SEMUA SJ yang memenuhi dua syarat tersebut.
+  // 4. Jangan membatasi berdasarkan driver/crew atau jumlah premi sebelumnya.
+  //
+  // Filter ini sengaja disamakan dengan sumber data Dashboard
+  // (RPC get_sj_belum_premi), sehingga jumlah SJ di dropdown tidak
+  // berbeda dengan jumlah SJ "Belum Premi Driver" di Dashboard.
   const fetchSJ = async () => {
     if (!entityCtx?.entity_id) return;
 
-    let query = supabase
-      .from("uang_saku_driver")
-      .select("no_surat_jalan, driver, crew, tanggal_berangkat, tanggal_kembali, no_polisi, kode_unit, kode_rute, entity_id")
-      .order("tanggal", { ascending: false });
+    const targetEntity =
+      entityCtx.tipe === "pusat"
+        ? selectedEntityId ?? entityCtx.entity_id
+        : entityCtx.entity_id;
 
-    if (entityCtx.tipe === "pusat") {
-      const targetEntity = selectedEntityId ?? entityCtx.entity_id;
-      query = query.eq("entity_id", targetEntity);
-    } else {
-      query = query.eq("entity_id", entityCtx.entity_id);
-    }
+    type BelumPremiRpcRow = {
+      no_surat_jalan: string | null;
+      tanggal_berangkat: string | null;
+      driver: string | null;
+      kode_rute: string | null;
+      entity_id: string | null;
+      premi?: number | null;
+    };
 
-    let semuaSJRows: SuratJalanRow[] = [];
-    let pageSJ = 0;
-    const pageSize = 1000;
+    type SuratJalanQueryRow = {
+      no_surat_jalan: string | null;
+      driver: string | null;
+      crew: string | null;
+      tanggal_berangkat: string | null;
+      tanggal_kembali: string | null;
+      no_polisi: string | null;
+      kode_unit: string | null;
+      kode_rute: string | null;
+      entity_id: string | null;
+    };
 
-    while (true) {
-      const { data, error } = await query.range(
-        pageSJ * pageSize,
-        (pageSJ + 1) * pageSize - 1
+    try {
+      // ============================================================
+      // SUMBER UTAMA:
+      // get_sj_belum_premi = SJ yang:
+      //   - SUDAH punya uang_saku_driver
+      //   - BELUM punya premi_driver
+      //   - sesuai entity yang sedang dipilih
+      //
+      // Jangan pakai lagi usedMap / hitung berapa kali SJ dipakai,
+      // karena itu justru bisa membuat data yang seharusnya muncul
+      // di Dashboard hilang dari dropdown.
+      // ============================================================
+      const { data: rpcData, error: rpcError } = await supabase.rpc(
+        "get_sj_belum_premi",
+        { entity_filter: targetEntity }
       );
 
-      if (error) {
-        console.error("❌ Gagal ambil SJ:", error.message);
-        break;
-      }
-
-      if (!data || data.length === 0) break;
-
-      semuaSJRows = [...semuaSJRows, ...data];
-
-      if (data.length < pageSize) break;
-
-      pageSJ++;
-    }
-
-    // ambil SJ yang sudah dipakai
-    let usedQuery = supabase
-      .from("premi_driver")
-      .select("no_surat_jalan, driver");
-
-    if (entityCtx.tipe === "pusat") {
-      const targetEntity = selectedEntityId ?? entityCtx.entity_id;
-      usedQuery = usedQuery.eq("entity_id", targetEntity);
-    } else {
-      usedQuery = usedQuery.eq("entity_id", entityCtx.entity_id);
-    }
-
-    let semuaDipakai: PremiDriverRow[] = [];
-      let pagePremi = 0;
-
-      while (true) {
-        const { data } = await usedQuery.range(
-          pagePremi * pageSize,
-          (pagePremi + 1) * pageSize - 1
+      if (rpcError) {
+        console.error(
+          "❌ Gagal mengambil SJ belum premi dari RPC:",
+          rpcError.message
         );
-
-        if (!data || data.length === 0) break;
-
-        semuaDipakai = [...semuaDipakai, ...data];
-
-        if (data.length < pageSize) break;
-
-        pagePremi++;
-      }
-
-      const sudahDipakai = semuaDipakai;
-   
-    // hitung berapa kali SJ dipakai
-    const usedMap: Record<string, number> = {};
-
-    (sudahDipakai || []).forEach((r) => {
-      const sj = r.no_surat_jalan;
-
-      if (!usedMap[sj]) usedMap[sj] = 0;
-      usedMap[sj]++;
-    });
-
-    const hasil: { no_surat_jalan: string; nama: string }[] = [];
-
-    semuaSJRows?.forEach((row) => {
-      const sj = row.no_surat_jalan;
-      const driver = row.driver?.trim() || "";
-      const crew = row.crew?.trim();
-
-      const usedCount = usedMap[sj] || 0;
-
-      // ===== hanya driver (crew kosong/null) =====
-      if (driver && !crew) {
-        if (usedCount === 0) {
-          hasil.push({ no_surat_jalan: sj, nama: driver });
-        }
+        setSuratJalanTersedia([]);
+        setSemuaSJ([]);
         return;
       }
 
-      // ===== driver + crew =====
-      if (driver && crew) {
-        if (usedCount === 0) {
-          hasil.push({ no_surat_jalan: sj, nama: driver });
-        } else if (usedCount === 1) {
-          hasil.push({ no_surat_jalan: sj, nama: crew });
+      const eligibleRows = (rpcData ?? []) as BelumPremiRpcRow[];
+
+      if (eligibleRows.length === 0) {
+        setSuratJalanTersedia([]);
+        setSemuaSJ([]);
+        return;
+      }
+
+      // Ambil nomor SJ yang benar-benar diberikan RPC.
+      // Set digunakan hanya untuk menghilangkan duplikat nomor SJ,
+      // bukan untuk membuang data SJ.
+      const noSJSet = new Set<string>();
+
+      for (const row of eligibleRows) {
+        const noSJ = row.no_surat_jalan?.trim();
+        if (noSJ) {
+          noSJSet.add(noSJ);
         }
       }
-    });
 
-    const unique = Array.from(
-      new Map(
-        hasil.map((item) => [`${item.no_surat_jalan}__${item.nama}`, item])
-      ).values()
-    );
+      const noSJList = Array.from(noSJSet);
 
-    setSuratJalanTersedia(
-      unique.sort((a, b) => a.no_surat_jalan.localeCompare(b.no_surat_jalan))
-    );
+      if (noSJList.length === 0) {
+        setSuratJalanTersedia([]);
+        setSemuaSJ([]);
+        return;
+      }
 
-    setSemuaSJ(semuaSJRows ?? []);
+      // ============================================================
+      // Ambil detail dari surat_jalan.
+      // RPC hanya mengembalikan beberapa kolom, sedangkan form
+      // membutuhkan no polisi, unit, crew, tanggal kembali, dll.
+      // ============================================================
+      const { data: suratJalanData, error: suratJalanError } =
+        await supabase
+          .from("surat_jalan")
+          .select(
+            "no_surat_jalan, driver, crew, tanggal_berangkat, tanggal_kembali, no_polisi, kode_unit, kode_rute, entity_id"
+          )
+          .eq("entity_id", targetEntity)
+          .in("no_surat_jalan", noSJList);
+
+      if (suratJalanError) {
+        console.error(
+          "❌ Gagal mengambil detail surat_jalan:",
+          suratJalanError.message
+        );
+        setSuratJalanTersedia([]);
+        setSemuaSJ([]);
+        return;
+      }
+
+      const suratJalanRows = (suratJalanData ?? []) as SuratJalanQueryRow[];
+
+      // Map berdasarkan nomor SJ.
+      const detailMap = new Map<string, SuratJalanQueryRow>();
+
+      for (const row of suratJalanRows) {
+        const noSJ = row.no_surat_jalan?.trim();
+        if (!noSJ) continue;
+
+        // Jika ada duplikat nomor SJ di surat_jalan, gunakan data
+        // pertama yang ditemukan. Yang penting nomor SJ tetap muncul.
+        if (!detailMap.has(noSJ)) {
+          detailMap.set(noSJ, row);
+        }
+      }
+
+      // ============================================================
+      // Bentuk data untuk dropdown.
+      //
+      // SATU SJ = SATU pilihan.
+      // Tidak ada lagi logika:
+      //   usedCount === 0
+      //   usedCount === 1
+      //   driver + crew
+      //
+      // Karena requirement dropdown adalah menampilkan SEMUA SJ
+      // yang sudah punya uang saku dan belum punya premi.
+      // ============================================================
+      const hasil: { no_surat_jalan: string; nama: string }[] = [];
+
+      for (const rpcRow of eligibleRows) {
+        const noSJ = rpcRow.no_surat_jalan?.trim();
+
+        if (!noSJ) continue;
+
+        const detail = detailMap.get(noSJ);
+
+        const driver = (detail?.driver ?? rpcRow.driver ?? "").trim();
+        const crew = (detail?.crew ?? "").trim();
+
+        // Driver menjadi nama utama.
+        // Kalau driver kosong, gunakan crew agar SJ tetap muncul.
+        const nama = driver || crew || "-";
+
+        hasil.push({
+          no_surat_jalan: noSJ,
+          nama,
+        });
+      }
+
+      // Hilangkan duplikat nomor SJ.
+      // Yang dihilangkan hanya duplikat tampilan, bukan SJ yang berbeda.
+      const unique = Array.from(
+        new Map(
+          hasil.map((item) => [item.no_surat_jalan, item])
+        ).values()
+      );
+
+      // Urutan berdasarkan nomor SJ hanya untuk tampilan dropdown.
+      // Tidak mempengaruhi data Dashboard maupun data transaksi.
+      unique.sort((a, b) =>
+        a.no_surat_jalan.localeCompare(b.no_surat_jalan, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        })
+      );
+
+      // Simpan semua data detail SJ yang lolos RPC.
+      const semuaSJRows: SuratJalanRow[] = suratJalanRows.map((row) => ({
+        no_surat_jalan: row.no_surat_jalan ?? "",
+        driver: row.driver ?? "",
+        crew: row.crew ?? "",
+        tanggal_berangkat: row.tanggal_berangkat ?? "",
+        tanggal_kembali: row.tanggal_kembali ?? "",
+        no_polisi: row.no_polisi ?? "",
+        kode_unit: row.kode_unit ?? "",
+        kode_rute: row.kode_rute ?? "",
+      }));
+
+      setSuratJalanTersedia(unique);
+      setSemuaSJ(semuaSJRows);
+
+      console.log(
+        `✅ SJ tersedia untuk Premi Driver: ${unique.length} data`
+      );
+    } catch (err: unknown) {
+      console.error("❌ Error fetchSJ:", err);
+      setSuratJalanTersedia([]);
+      setSemuaSJ([]);
+    }
   };
 
   // ✅ panggil ulang saat mount dan saat filter outlet berubah
@@ -901,6 +985,7 @@ export default function PremiDriver() {
         { label: "Kode Unit", key: "kode_unit" },
         { label: "Kode Rute", key: "kode_rute" },
         { label: "Premi", key: "premi", type: "currency" },
+        { label: "Bonus", key: "bonus", type: "currency" },
         { label: "Perpal", key: "perpal", type: "currency" },
         { label: "Potongan", key: "potongan", type: "currency" },
         { label: "Jumlah", key: "jumlah", type: "currency" },
@@ -975,7 +1060,7 @@ export default function PremiDriver() {
       Object.entries(formData).filter(([key]) => key !== "perpalAktif")
     ) as Partial<Record<keyof PremiData, string | number | null>>;
 
-    const numericFields: (keyof PremiData)[] = ["premi", "perpal", "biaya_etoll"];
+    const numericFields: (keyof PremiData)[] = ["premi", "bonus", "perpal", "biaya_etoll"];
 
     for (const key of numericFields) {
       const raw = formData[key];
@@ -1000,7 +1085,17 @@ export default function PremiDriver() {
       .filter((p) => p.kategori === "jaminan")
       .reduce((sum, p) => sum + (p.nominal || 0), 0);
 
+    const totalPiutang = potonganList
+      .filter((p) => p.kategori === "kasbon")
+      .reduce((sum, p) => sum + (p.nominal || 0), 0);
+
+    const totalKlaimLaka = potonganList
+      .filter((p) => p.kategori === "klaim_laka")
+      .reduce((sum, p) => sum + (p.nominal || 0), 0);
+
     cleanedData.potongan_jaminan = totalJaminan;
+    cleanedData.potongan_piutang = totalPiutang;
+    cleanedData.potongan_klaim_laka = totalKlaimLaka;
 
     // === Hitung jumlah akhir ===
     const totalPotongan = potonganList.reduce(
@@ -1009,9 +1104,10 @@ export default function PremiDriver() {
     );
 
     const premi = Number(cleanedData.premi ?? 0);
+    const bonus = Number(cleanedData.bonus ?? 0);
     const perpal = Number(cleanedData.perpal ?? 0);
 
-    cleanedData.jumlah = premi + perpal - totalPotongan;
+    cleanedData.jumlah = premi + bonus + perpal - totalPotongan;
     cleanedData.potongan = totalPotongan;
 
     cleanedData.user_id = getCustomUserId();
@@ -1157,6 +1253,24 @@ export default function PremiDriver() {
     }
 
     
+
+    if (cleanedData.bonus) {
+      transaksi.push({
+        tanggal: formData.tanggal,
+        waktu: waktuNow,
+        keterangan: `Bonus Driver ${keteranganBase}`,
+        nominal: Number(cleanedData.bonus ?? 0),
+        jenis_transaksi: "kredit",
+        sumber_tabel: "premi_driver",
+        sumber_id: finalId,
+        bukti_transaksi: finalNomor,
+        urutan: urutan++,
+        user_id: currentUserId,
+        updated_at: new Date().toISOString(),
+        entity_id: targetEntity,
+      });
+    }
+
       // build perpal keterangan lengkap sesuai format: Perpal [driver] [nopol] [tanggal] [ROUTE] (jam...) [no_surat_jalan]
      if (cleanedData.perpal) {
       const perpalKet = generateKeterangan(
@@ -1703,7 +1817,7 @@ export default function PremiDriver() {
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
   ) => {
     const { name, value } = e.target;
-    const numFields = ["premi", "perpal", "potongan"];
+    const numFields = ["premi", "bonus", "perpal", "potongan"];
     if (numFields.includes(name)) {
       const val = value.replace(/[^\d]/g, "");
       setFormData((prev) => ({
@@ -1779,9 +1893,9 @@ export default function PremiDriver() {
     );
     setFormData((prev) => ({
       ...prev,
-      jumlah: (prev.premi || 0) + (prev.perpal || 0) - totalPotongan,
+      jumlah: (prev.premi || 0) + (prev.bonus || 0) + (prev.perpal || 0) - totalPotongan,
     }));
-  }, [formData.premi, formData.perpal, potonganList]);
+  }, [formData.premi, formData.bonus, formData.perpal, potonganList]);
 
   // -- CLOSE FORM ---
   const handleCloseForm = () => {
@@ -1913,7 +2027,7 @@ export default function PremiDriver() {
                     : "Pilih Tanggal"
                 }
                 onClick={() => setShowPicker(true)}
-                className="border border-gray-300 rounded px-2 py-1 text-sm w-[220px] cursor-pointer"
+                className="border border-gray-300 rounded px-2 py-1 text-sm w-[190px] cursor-pointer"
               />
             </div>
 
@@ -2023,6 +2137,7 @@ export default function PremiDriver() {
               <th className="p-2 border text-center w-[120px]">Kode Unit</th>
               <th className="p-2 border text-center w-[220px]">Kode Rute</th>
               <th className="p-2 border text-center w-[150px]">Premi</th>
+              <th className="p-2 border text-center w-[150px]">Bonus</th>
               <th className="p-2 border text-center w-[150px]">Perpal</th>
               <th className="p-2 border text-center w-[150px]">Potongan</th>
               <th className="p-2 border text-center w-[150px]">Jumlah</th>
@@ -2172,6 +2287,7 @@ export default function PremiDriver() {
                   <td className="p-2 border text-center">{row.kode_unit}</td>
                   <td className="p-2 border text-center">{row.kode_rute}</td>
                   <td className="p-2 border text-right">{formatRupiah(row.premi)}</td>
+                  <td className="p-2 border text-right">{formatRupiah(row.bonus)}</td>
                   <td className="p-2 border text-right">{formatRupiah(row.perpal)}</td>
                   <td className="p-2 border text-right">{formatRupiah(row.potongan)}</td>
                   <td className="p-2 border text-right">{formatRupiah(row.jumlah)}</td>
@@ -2450,6 +2566,15 @@ export default function PremiDriver() {
                   <input
                     name="premi"
                     value={formatRupiah(formData.premi ?? 0)}
+                    onChange={handleChange}
+                    className="w-full border rounded px-3 py-2 text-left"
+                  />
+                </div>
+                <div>
+                  <label>Bonus</label>
+                  <input
+                    name="bonus"
+                    value={formatRupiah(formData.bonus ?? 0)}
                     onChange={handleChange}
                     className="w-full border rounded px-3 py-2 text-left"
                   />
